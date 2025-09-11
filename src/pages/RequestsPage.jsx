@@ -96,9 +96,18 @@ const RequestsPage = () => {
               latitude: data.latitude || data.location?.latitude || null,
               longitude: data.longitude || data.location?.longitude || null,
               status: data.status || "Pending",
+              timestamp: data.timestamp ? data.timestamp.toDate() : null,
             };
           });
-          setRequests(reqData);
+          
+          // Filter requests to only show those from the last 1 hour
+          const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+          const freshRequests = reqData.filter(req => {
+            if (!req.timestamp) return false;
+            return req.timestamp >= oneHourAgo;
+          });
+          
+          setRequests(freshRequests);
         },
         (error) => console.error("Error fetching requests:", error)
       );
@@ -122,9 +131,12 @@ const RequestsPage = () => {
       <div style={{ display: "flex", flex: 1, flexWrap: "wrap" }}>
         {/* Table Section */}
         <div style={{ flex: 1, minWidth: "300px", padding: "20px", overflowX: "auto" }}>
-          <h2>Incoming Requests</h2>
+          <h2>Incoming Requests (Fresh - Last 1 Hour)</h2>
+          <p style={{ color: "#666", fontSize: "14px", marginBottom: "15px" }}>
+            Showing only requests from the last hour for faster response times
+          </p>
           {requests.length === 0 ? (
-            <p>No incoming requests.</p>
+            <p>No fresh incoming requests in the last hour.</p>
           ) : (
             <table style={{ width: "100%", borderCollapse: "collapse", border: "1px solid #ddd" }}>
               <thead>
@@ -132,6 +144,7 @@ const RequestsPage = () => {
                   <th>Name</th>
                   <th>Phone</th>
                   <th>Situation</th>
+                  <th>Time Received</th>
                   <th>Latitude</th>
                   <th>Longitude</th>
                   <th>Share Location</th>
@@ -151,6 +164,7 @@ const RequestsPage = () => {
                     <td>{req.name}</td>
                     <td>{req.phone}</td>
                     <td>{req.situation}</td>
+                    <td>{req.timestamp ? req.timestamp.toLocaleString() : "-"}</td>
                     <td>{req.latitude ? req.latitude.toFixed(4) : "-"}</td>
                     <td>{req.longitude ? req.longitude.toFixed(4) : "-"}</td>
                     <td>
@@ -233,12 +247,12 @@ const RequestsPage = () => {
         <div style={{ flex: 1, minWidth: "300px", height: "100%" }}>
           {selected && selected.latitude && selected.longitude ? (
             <iframe
-              title="Google Map"
+              title="OpenStreetMap"
               width="100%"
               height="100%"
               style={{ border: 0 }}
               loading="lazy"
-              src={`https://www.google.com/maps?q=${selected.latitude},${selected.longitude}&hl=es;z=14&output=embed`}
+              src={`https://www.openstreetmap.org/export/embed.html?bbox=${selected.longitude - 0.01},${selected.latitude - 0.01},${selected.longitude + 0.01},${selected.latitude + 0.01}&layer=mapnik&marker=${selected.latitude},${selected.longitude}`}
             ></iframe>
           ) : (
             <p style={{ padding: "20px" }}>No location data available</p>
