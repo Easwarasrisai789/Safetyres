@@ -1,297 +1,630 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { onAuthStateChanged, signOut, updatePassword as fbUpdatePassword } from 'firebase/auth';
-import { useNavigate, useLocation } from 'react-router-dom';
-import { auth, db } from '../firebase';
-import { collection, query, where, onSnapshot, doc, updateDoc } from 'firebase/firestore';
-import DriverMap from './DriverMap';
+// src/pages/DriverPortal.jsx
+import React, { useEffect, useMemo, useState } from "react";
+import {
+  onAuthStateChanged,
+  signOut,
+  updatePassword as fbUpdatePassword,
+} from "firebase/auth";
+import { useNavigate, useLocation } from "react-router-dom";
+import { auth, db } from "../firebase";
+import {
+  collection,
+  query,
+  where,
+  onSnapshot,
+  doc,
+  updateDoc,
+} from "firebase/firestore";
+
+import DriverMap from "./DriverMap";
+
+/**
+ * DriverPortal.jsx
+ *
+ * Full page code. Added:
+ * - Online / Offline toggle visible in the sidebar (driver only).
+ * - Robust guarding around driverDocId before updates.
+ * - LiveShare handling and auto location updates (every 30s when enabled).
+ * - Clear notifications and auto-dismiss behavior.
+ *
+ * NOTE: This page is meant to be the driver's portal (driver authenticates).
+ * Admin-only controls should not be here; admin will have separate pages.
+ */
 
 export default function DriverPortal() {
   const [user, setUser] = useState(null);
-  const [assignment, setAssignment] = useState(null);
-  const [allAssignments, setAllAssignments] = useState([]);
   const [driver, setDriver] = useState(null);
   const [driverDocId, setDriverDocId] = useState(null);
-  const [activeTab, setActiveTab] = useState('assignment');
-  const [profileForm, setProfileForm] = useState({ name: '', phone: '', vehicleType: '' });
-  const [passwordForm, setPasswordForm] = useState({ current: '', next: '', confirm: '' });
+  const [allAssignments, setAllAssignments] = useState([]);
+
+  const [activeTab, setActiveTab] = useState("assignment");
+
+  const [profileForm, setProfileForm] = useState({
+    name: "",
+    phone: "",
+    vehicleType: "",
+  });
+
+  const [passwordForm, setPasswordForm] = useState({
+    next: "",
+    confirm: "",
+  });
+
   const [notification, setNotification] = useState(null);
+  const [tick, setTick] = useState(0);
+
+  const [mapModal, setMapModal] = useState({
+    open: false,
+    destination: null,
+  });
+
   const navigate = useNavigate();
-  const locationRouter = useLocation();
-  const searchParams = React.useMemo(() => new URLSearchParams(locationRouter.search), [locationRouter.search]);
-  const impersonateDriverId = searchParams.get('impersonate');
-  const [mapModal, setMapModal] = useState({ open: false, destination: null });
+  const router = useLocation();
+  const searchParams = new URLSearchParams(router.search);
+  const impersonateDriverId = searchParams.get("impersonate");
 
-  const doLogout = async () => {
-    await signOut(auth);
-    navigate('/driver-login');
-  };
-
+  /* ----------------------- AUTH LISTENER ----------------------- */
   useEffect(() => {
-    const unsubAuth = onAuthStateChanged(auth, (u) => setUser(u));
-    return () => unsubAuth();
+    const unsub = onAuthStateChanged(auth, (u) => setUser(u));
+    return () => unsub();
   }, []);
 
+  /* -------------------- DRIVER SNAPSHOT LISTENER -------------------- */
   useEffect(() => {
+    let unsubDriver = null;
+    let unsubRequests = null;
+
     if (!user && !impersonateDriverId) return;
+
     const dq = impersonateDriverId
-      ? query(collection(db, 'drivers'), where('__name__', '==', impersonateDriverId))
-      : query(collection(db, 'drivers'), where('email', '==', user?.email || ''));
-    const unsub = onSnapshot(dq, (snap) => {
-      const d = snap.docs[0];
-      const data = d?.data();
-      setDriver(data || null);
-      setDriverDocId(d?.id || null);
-      if (!data) { setAssignment(null); setAllAssignments([]); return; }
-      setProfileForm({
-        name: data.name || '',
-        phone: data.phone || '',
-        vehicleType: data.vehicleType || '',
-      });
-      const rq = query(collection(db, 'emergencyRequests'), where('assignedDriverId', '==', d.id));
-      const unsubReq = onSnapshot(rq, (rs) => {
-        const list = rs.docs.map((docu) => ({ id: docu.id, ...docu.data() }));
-        setAllAssignments(list);
-      });
-      return () => unsubReq();
-    });
-    return () => unsub();
+      ? query(
+          collection(db, "drivers"),
+          where("__name__", "==", impersonateDriverId)
+        )
+      : query(
+          collection(db, "drivers"),
+          where("email", "==", user?.email ?? "")
+        );
+
+    unsubDriver = onSnapshot(
+      dq,
+      (snap) => {
+        if (snap.empty) {
+          // no driver document yet
+          console.warn("No driver doc found for this account/query");
+          setDriver(null);
+          setDriverDocId(null);
+          setAllAssignments([]);
+          return;
+        }
+
+        const ref = snap.docs[0];
+        const data = ref.data();
+
+        setDriver({
+          ...data,
+          status: data?.status ?? "active",
+          liveShare: data?.liveShare ?? false,
+        });
+
+        setDriverDocId(ref.id);
+
+        setProfileForm({
+          name: data?.name ?? "",
+          phone: data?.phone ?? "",
+          vehicleType: data?.vehicleType ?? "",
+        });
+
+        // subscribe to assignments for this driver document id
+        if (unsubRequests) {
+          try {
+            unsubRequests();
+          } catch (e) {}
+          unsubRequests = null;
+        }
+
+        const rq = query(
+          collection(db, "emergencyRequests"),
+          where("assignedDriverId", "==", ref.id)
+        );
+
+        unsubRequests = onSnapshot(rq, (ss) => {
+          setAllAssignments(ss.docs.map((x) => ({ id: x.id, ...x.data() })));
+        });
+      },
+      (err) => {
+        console.error("driver onSnapshot error", err);
+      }
+    );
+
+    return () => {
+      try {
+        if (unsubDriver) unsubDriver();
+      } catch (e) {}
+      try {
+        if (unsubRequests) unsubRequests();
+      } catch (e) {}
+    };
   }, [user, impersonateDriverId]);
 
-  const { currentAssignment, historyAssignments } = React.useMemo(() => {
-    const nowMs = Date.now();
+  /* ---------------------- ASSIGNMENT FILTERING ---------------------- */
+  const { currentAssignment, historyAssignments } = useMemo(() => {
+    const now = Date.now();
     let current = null;
-    const hist = [];
+    const history = [];
+
     for (const r of allAssignments) {
-      const assignedAtMs = r.vehicleAssignedAt?.seconds
+      const assignedMs = r.vehicleAssignedAt?.seconds
         ? r.vehicleAssignedAt.seconds * 1000
-        : (r.vehicleAssignedAt ? Date.parse(r.vehicleAssignedAt) : null);
-      const stillActive = assignedAtMs ? (nowMs - assignedAtMs) < (10 * 60 * 1000) : false;
-      if (r.status === 'assigned' && stillActive && !current) {
-        current = r;
-      } else {
-        hist.push(r);
-      }
+        : r.vehicleAssignedAt
+        ? Date.parse(r.vehicleAssignedAt)
+        : null;
+
+      const active = assignedMs ? now - assignedMs < 10 * 60 * 1000 : false;
+
+      if (r.status === "assigned" && active && !current) current = r;
+      else history.push(r);
     }
-    hist.sort((a, b) => {
-      const am = a.vehicleAssignedAt?.seconds ? a.vehicleAssignedAt.seconds : 0;
-      const bm = b.vehicleAssignedAt?.seconds ? b.vehicleAssignedAt.seconds : 0;
-      return bm - am;
-    });
-    return { currentAssignment: current, historyAssignments: hist };
+
+    history.sort(
+      (a, b) =>
+        (b.vehicleAssignedAt?.seconds ?? 0) - (a.vehicleAssignedAt?.seconds ?? 0)
+    );
+
+    return { currentAssignment: current, historyAssignments: history };
   }, [allAssignments]);
 
+  /* ---------------------- MANUAL SHARE LOCATION ---------------------- */
   const shareLocation = () => {
-    if (!navigator.geolocation || !user) return;
-    navigator.geolocation.getCurrentPosition(async (pos) => {
-      const { latitude, longitude } = pos.coords;
-      const q = query(collection(db, 'drivers'), where('email', '==', user.email || ''));
-      const unsub = onSnapshot(q, async (snap) => {
-        const driverDoc = snap.docs[0];
-        if (driverDoc) {
-          await updateDoc(doc(db, 'drivers', driverDoc.id), {
+    if (!navigator.geolocation) {
+      setNotification({ title: "Error", message: "GPS not supported", type: "error" });
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        if (!driverDocId) {
+          setNotification({ title: "Error", message: "Driver record not loaded yet.", type: "error" });
+          return;
+        }
+
+        const { latitude, longitude } = pos.coords;
+
+        try {
+          await updateDoc(doc(db, "drivers", driverDocId), {
             location: { latitude, longitude },
             lastSharedAt: new Date().toISOString(),
           });
-          setNotification({ title: 'Location Shared', message: 'Your current location was sent.', type: 'success' });
+
+          setNotification({ title: "Success", message: "Location shared", type: "success" });
+        } catch (err) {
+          console.error("shareLocation update error", err);
+          setNotification({ title: "Error", message: "Failed to share location", type: "error" });
         }
-        unsub();
-      });
-    });
+      },
+      (err) => {
+        console.error("geolocation error", err);
+        setNotification({ title: "Error", message: "Location permission denied or unavailable", type: "error" });
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
   };
 
+  /* ---------------------- AUTO LOCATION UPDATE (LIVE SHARE) ---------------------- */
   useEffect(() => {
-    let id = null;
-    const tick = () => {
-      if (!navigator.geolocation || !user) return;
-      navigator.geolocation.getCurrentPosition(async (pos) => {
-        const { latitude, longitude } = pos.coords;
-        const dq = query(collection(db, 'drivers'), where('email', '==', user.email || ''));
-        const unsub = onSnapshot(dq, async (snap) => {
-          const driverDoc = snap.docs[0];
-          if (driverDoc) {
-            await updateDoc(doc(db, 'drivers', driverDoc.id), {
+    if (!driverDocId) return;
+
+    let stopped = false;
+
+    const updater = () => {
+      if (stopped) return;
+      // only when liveShare enabled and driver is active
+      if (!driver?.liveShare) return;
+      if (driver?.status !== "active") return;
+
+      if (!navigator.geolocation) return;
+
+      navigator.geolocation.getCurrentPosition(
+        async (pos) => {
+          if (stopped) return;
+          if (!driverDocId) return;
+          const { latitude, longitude } = pos.coords;
+          try {
+            await updateDoc(doc(db, "drivers", driverDocId), {
               location: { latitude, longitude },
               lastSharedAt: new Date().toISOString(),
             });
+          } catch (err) {
+            console.error("auto update location error:", err);
           }
-          unsub();
-        });
-      });
+        },
+        (err) => {
+          // silent
+        },
+        { enableHighAccuracy: true, timeout: 10000 }
+      );
     };
-    id = setInterval(tick, 60 * 1000);
-    return () => { if (id) clearInterval(id); };
-  }, [user]);
 
+    // run immediately and then every 30s
+    updater();
+    const interval = setInterval(updater, 30000);
+
+    return () => {
+      stopped = true;
+      clearInterval(interval);
+    };
+  }, [driverDocId, driver?.liveShare, driver?.status]);
+
+  /* ------------------ LAST LOCATION UPDATE TIMER ------------------ */
+  useEffect(() => {
+    const id = setInterval(() => setTick((x) => x + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  const lastUpdatedSeconds = useMemo(() => {
+    if (!driver?.lastSharedAt) return null;
+    const ms = new Date(driver.lastSharedAt).getTime();
+    if (Number.isNaN(ms)) return null;
+    return Math.floor((Date.now() - ms) / 1000);
+  }, [driver?.lastSharedAt, tick]);
+
+  /* -------------------------- SAVE PROFILE -------------------------- */
   const saveProfile = async () => {
-    if (!driverDocId) return;
-    await updateDoc(doc(db, 'drivers', driverDocId), {
-      name: profileForm.name,
-      phone: profileForm.phone,
-      vehicleType: profileForm.vehicleType,
-    });
-    setNotification({ title: 'Profile Updated', message: 'Your profile was saved.', type: 'success' });
-  };
+    if (!driverDocId) {
+      setNotification({ title: "Error", message: "Driver record not loaded yet.", type: "error" });
+      return;
+    }
 
-  const changePassword = async () => {
-    if (!user) { setNotification({ title: 'Error', message: 'Login required to update password.', type: 'error' }); return; }
-    if (!passwordForm.next || passwordForm.next !== passwordForm.confirm) {
-      setNotification({ title: 'Error', message: 'Passwords do not match.', type: 'error' }); return; }
     try {
-      await fbUpdatePassword(auth.currentUser, passwordForm.next);
-      setPasswordForm({ current: '', next: '', confirm: '' });
-      setNotification({ title: 'Password Updated', message: 'Your password was changed.', type: 'success' });
-    } catch (e) {
-      setNotification({ title: 'Error', message: 'Failed to update password. Please re-login.', type: 'error' });
+      await updateDoc(doc(db, "drivers", driverDocId), {
+        name: profileForm.name,
+        phone: profileForm.phone,
+        vehicleType: profileForm.vehicleType,
+      });
+
+      setNotification({ title: "Success", message: "Profile updated", type: "success" });
+    } catch (err) {
+      console.error("saveProfile error", err);
+      setNotification({ title: "Error", message: "Failed to save profile", type: "error" });
     }
   };
 
+  /* ------------------------ CHANGE PASSWORD ------------------------ */
+  const changePassword = async () => {
+    if (passwordForm.next !== passwordForm.confirm) {
+      setNotification({ title: "Error", message: "Passwords do not match", type: "error" });
+      return;
+    }
+
+    try {
+      await fbUpdatePassword(auth.currentUser, passwordForm.next);
+      setPasswordForm({ next: "", confirm: "" });
+      setNotification({ title: "Success", message: "Password updated", type: "success" });
+    } catch (e) {
+      console.error("changePassword error", e);
+      setNotification({ title: "Error", message: "Re-login required", type: "error" });
+    }
+  };
+
+  /* ---------------------------- LOGOUT ---------------------------- */
+  const doLogout = async () => {
+    await signOut(auth);
+    navigate("/driver-login");
+  };
+
+  /* ---------------------------- MAP MODAL ---------------------------- */
+  const openMapModal = (lat, lng) => {
+    setMapModal({
+      open: true,
+      destination: { latitude: lat, longitude: lng },
+    });
+  };
+  const closeMapModal = () => setMapModal({ open: false, destination: null });
+
+  /* ---------------------------- NOTIFICATIONS AUTO CLOSE ---------------------------- */
+  useEffect(() => {
+    if (!notification) return;
+    const id = setTimeout(() => setNotification(null), 3500);
+    return () => clearTimeout(id);
+  }, [notification]);
+
+  /* ---------------------------- STATUS TOGGLE (SIDEBAR) ---------------------------- */
+  const setDutyStatus = async (newStatus) => {
+    if (!driverDocId) {
+      setNotification({ title: "Error", message: "Driver record not loaded yet.", type: "error" });
+      return;
+    }
+    try {
+      await updateDoc(doc(db, "drivers", driverDocId), { status: newStatus });
+      setDriver((p) => ({ ...(p || {}), status: newStatus }));
+      setNotification({ title: "Status Updated", message: `You are now ${newStatus}`, type: "success" });
+    } catch (err) {
+      console.error("status update error", err);
+      setNotification({ title: "Error", message: "Failed to update status", type: "error" });
+    }
+  };
+
+  /* ---------------------------- UI ---------------------------- */
   return (
     <div style={styles.container}>
+      {/* SIDEBAR */}
       <aside style={styles.sidebar}>
-        <h3 style={{ marginTop: 0 }}>Driver</h3>
-        <ul style={styles.menu}>
-          <li style={{ ...styles.menuItem, ...(activeTab === 'assignment' ? styles.menuItemActive : {}) }} onClick={() => setActiveTab('assignment')}>My Assignment</li>
-          <li style={{ ...styles.menuItem, ...(activeTab === 'profile' ? styles.menuItemActive : {}) }} onClick={() => setActiveTab('profile')}>Profile</li>
-          <li style={{ ...styles.menuItem, ...(activeTab === 'history' ? styles.menuItemActive : {}) }} onClick={() => setActiveTab('history')}>History</li>
-        </ul>
-        <button style={styles.logout} onClick={doLogout}>Logout</button>
-      </aside>
-      <main style={styles.main}>
-        <h2 style={{ marginTop: 0, marginBottom: 20 }}>Driver Portal</h2>
-        {!user && <p>Please log in.</p>}
+        <h3 style={{ margin: 0 }}>{driver?.name || "Driver Portal"}</h3>
+        <div style={{ color: "#ddd", fontSize: 13, marginTop: 6 }}>{driver?.email}</div>
 
-        {/* Assignment Section */}
-        {user && activeTab === 'assignment' && (
+        {/* Duty toggle in sidebar for quick access */}
+        <div style={{ marginTop: 12, display: "flex", gap: 8, alignItems: "center" }}>
+          <div style={{ fontWeight: "600", fontSize: 13 }}>Duty:</div>
+          <select
+            value={driver?.status ?? "active"}
+            onChange={(e) => setDutyStatus(e.target.value)}
+            style={{
+              padding: "6px 10px",
+              borderRadius: 8,
+              border: "1px solid #ccc",
+              background: driver?.status === "active" ? "#e6ffef" : "#fff0f0",
+              color: driver?.status === "active" ? "#065f46" : "#991b1b",
+              fontWeight: 700,
+            }}
+          >
+            <option value="active">🟢 On Duty</option>
+            <option value="offline">🔴 Offline</option>
+          </select>
+        </div>
+
+        <ul style={styles.menu}>
+          <li
+            style={{
+              ...styles.menuItem,
+              ...(activeTab === "assignment" && styles.menuItemActive),
+            }}
+            onClick={() => setActiveTab("assignment")}
+          >
+            My Assignment
+          </li>
+
+          <li
+            style={{
+              ...styles.menuItem,
+              ...(activeTab === "profile" && styles.menuItemActive),
+            }}
+            onClick={() => setActiveTab("profile")}
+          >
+            Profile
+          </li>
+
+          <li
+            style={{
+              ...styles.menuItem,
+              ...(activeTab === "history" && styles.menuItemActive),
+            }}
+            onClick={() => setActiveTab("history")}
+          >
+            History
+          </li>
+        </ul>
+
+        <button style={styles.logout} onClick={doLogout}>
+          Logout
+        </button>
+      </aside>
+
+      {/* MAIN */}
+      <main style={styles.main}>
+        <h2>Welcome {driver?.name}</h2>
+
+        {/* ========== ASSIGNMENT TAB ========== */}
+        {activeTab === "assignment" && (
           <div style={styles.card}>
-            <p><strong>{impersonateDriverId ? 'Impersonating Driver' : 'User'}:</strong> {impersonateDriverId ? (driver?.name || driver?.email || impersonateDriverId) : (user?.email)}</p>
-            {!currentAssignment ? (
-              <p>No vehicle assigned yet.</p>
-            ) : (
+            <h3>Current Assignment</h3>
+
+            {/* LIVE SHARE */}
+            <div style={{ margin: "10px 0 16px 0" }}>
+              <label style={{ fontWeight: "bold" }}>Live Share:</label>
+
+              <select
+                value={driver?.liveShare ? "on" : "off"}
+                style={{ marginLeft: 10, padding: "8px 12px", borderRadius: 6 }}
+                onChange={async (e) => {
+                  const val = e.target.value === "on";
+                  if (!driverDocId) {
+                    setNotification({ title: "Error", message: "Driver record not loaded yet.", type: "error" });
+                    return;
+                  }
+                  try {
+                    await updateDoc(doc(db, "drivers", driverDocId), { liveShare: val });
+                    setDriver((p) => ({ ...(p || {}), liveShare: val }));
+                    setNotification({ title: "Live Share", message: val ? "Enabled" : "Disabled", type: "success" });
+                  } catch (err) {
+                    console.error("liveShare update error", err);
+                    setNotification({ title: "Error", message: "Failed to update live share", type: "error" });
+                  }
+                }}
+              >
+                <option value="on">🟢 ON</option>
+                <option value="off">🔴 OFF</option>
+              </select>
+            </div>
+
+            {/* No Assignment */}
+            {!currentAssignment && <p>No Active Assignment</p>}
+
+            {/* With Assignment */}
+            {currentAssignment && (
               <div style={styles.assignmentGrid}>
                 <div>
-                  <p><strong>Assigned Vehicle:</strong> {currentAssignment.assignedVehicle}</p>
-                  <p><strong>Type:</strong> {currentAssignment.assignedVehicleType || '-'}</p>
-                  <p><strong>Status:</strong> {currentAssignment.status}</p>
+                  <p><b>Vehicle:</b> {currentAssignment.assignedVehicle}</p>
+                  <p><b>Type:</b> {currentAssignment.assignedVehicleType}</p>
+                  <p><b>Status:</b> {currentAssignment.status}</p>
                 </div>
+
                 <div>
-                  <p><strong>Destination:</strong> {currentAssignment.latitude}, {currentAssignment.longitude}</p>
-                  <DriverMap
-                    driverLocation={driver?.location}
-                    destination={{ latitude: currentAssignment.latitude, longitude: currentAssignment.longitude }}
-                  />
-                  <div style={{ marginTop: 12 }}>
-                    <button style={styles.button} onClick={() => setMapModal({ open: true, destination: { latitude: currentAssignment.latitude, longitude: currentAssignment.longitude } })}>Expand Map</button>
+                  <p><b>Destination:</b> {currentAssignment.latitude}, {currentAssignment.longitude}</p>
+
+                  <div style={styles.mapBox}>
+                    <DriverMap
+                      driverLocation={driver?.location}
+                      destination={{
+                        latitude: currentAssignment.latitude,
+                        longitude: currentAssignment.longitude,
+                      }}
+                    />
                   </div>
+
+                  {lastUpdatedSeconds !== null && (
+                    <p style={{ marginTop: 10, color: lastUpdatedSeconds < 40 ? "green" : "red" }}>
+                      🔄 Last Updated: {lastUpdatedSeconds}s ago
+                    </p>
+                  )}
+
+                  <button
+                    style={styles.button}
+                    onClick={() => openMapModal(currentAssignment.latitude, currentAssignment.longitude)}
+                  >
+                    Expand Map
+                  </button>
+
+                  <button
+                    style={{ ...styles.button, background: "#2D9CDB", marginLeft: 10 }}
+                    onClick={shareLocation}
+                  >
+                    Share Location
+                  </button>
                 </div>
               </div>
             )}
-            <div style={{ marginTop: 16 }}>
-              <button style={styles.button} onClick={shareLocation}>Share Current Location</button>
-            </div>
           </div>
         )}
 
-        {/* Profile Section */}
-        {user && activeTab === 'profile' && (
+        {/* ========== PROFILE TAB ========== */}
+        {activeTab === "profile" && (
           <div style={styles.card}>
-            <h3 style={{ marginTop: 0 }}>My Profile</h3>
+            <h3>Profile</h3>
+
             <div style={styles.formGrid}>
               <div>
                 <label>Name</label>
-                <input style={styles.input} value={profileForm.name} onChange={(e) => setProfileForm({ ...profileForm, name: e.target.value })} />
+                <input
+                  style={styles.input}
+                  value={profileForm.name}
+                  onChange={(e) => setProfileForm({ ...profileForm, name: e.target.value })}
+                />
               </div>
+
               <div>
                 <label>Phone</label>
-                <input style={styles.input} value={profileForm.phone} onChange={(e) => setProfileForm({ ...profileForm, phone: e.target.value })} />
+                <input
+                  style={styles.input}
+                  value={profileForm.phone}
+                  onChange={(e) => setProfileForm({ ...profileForm, phone: e.target.value })}
+                />
               </div>
+
               <div>
                 <label>Vehicle Type</label>
-                <select style={styles.input} value={profileForm.vehicleType} onChange={(e) => setProfileForm({ ...profileForm, vehicleType: e.target.value })}>
+                <select
+                  style={styles.input}
+                  value={profileForm.vehicleType}
+                  onChange={(e) => setProfileForm({ ...profileForm, vehicleType: e.target.value })}
+                >
                   <option value="ambulance">Ambulance</option>
                   <option value="fireengine">Fire Engine</option>
                   <option value="policevan">Police Van</option>
                 </select>
               </div>
             </div>
-            <div style={{ marginTop: 16 }}>
-              <button style={styles.button} onClick={saveProfile}>Save</button>
-            </div>
 
-            <h3 style={{ marginTop: 24 }}>Update Password</h3>
+            <button style={styles.button} onClick={saveProfile}>Save Profile</button>
+
+            <hr style={{ margin: "20px 0" }} />
+
+            <h3>Change Password</h3>
+
             <div style={styles.formGrid}>
               <div>
                 <label>New Password</label>
-                <input type="password" style={styles.input} value={passwordForm.next} onChange={(e) => setPasswordForm({ ...passwordForm, next: e.target.value })} />
+                <input
+                  type="password"
+                  style={styles.input}
+                  value={passwordForm.next}
+                  onChange={(e) => setPasswordForm({ ...passwordForm, next: e.target.value })}
+                />
               </div>
+
               <div>
                 <label>Confirm Password</label>
-                <input type="password" style={styles.input} value={passwordForm.confirm} onChange={(e) => setPasswordForm({ ...passwordForm, confirm: e.target.value })} />
+                <input
+                  type="password"
+                  style={styles.input}
+                  value={passwordForm.confirm}
+                  onChange={(e) => setPasswordForm({ ...passwordForm, confirm: e.target.value })}
+                />
               </div>
             </div>
-            <div style={{ marginTop: 16 }}>
-              <button style={styles.button} onClick={changePassword}>Change Password</button>
-            </div>
+
+            <button style={styles.button} onClick={changePassword}>Update Password</button>
           </div>
         )}
 
-        {/* History Section */}
-        {user && activeTab === 'history' && (
+        {/* ========== HISTORY TAB ========== */}
+        {activeTab === "history" && (
           <div style={styles.card}>
-            <h3 style={{ marginTop: 0 }}>Past Assignments</h3>
-            {historyAssignments.length === 0 ? (
-              <p>No past assignments.</p>
-            ) : (
+            <h3>Past Assignments</h3>
+
+            {historyAssignments.length === 0 && <p>No History Found</p>}
+
+            {historyAssignments.length > 0 && (
               <table style={styles.table}>
                 <thead>
-                  <tr style={{ background: '#f1f3f5' }}>
+                  <tr>
                     <th style={styles.th}>Vehicle</th>
                     <th style={styles.th}>Type</th>
                     <th style={styles.th}>Assigned At</th>
-                    <th style={styles.th}>Destination</th>
+                    <th style={styles.th}>Location</th>
                     <th style={styles.th}>Map</th>
                   </tr>
                 </thead>
+
                 <tbody>
-                  {historyAssignments.map((r) => {
-                    const assignedAt = r.vehicleAssignedAt?.seconds ? new Date(r.vehicleAssignedAt.seconds * 1000).toLocaleString() : '-';
-                    return (
-                      <tr key={r.id}>
-                        <td style={styles.td}>{r.assignedVehicle || '-'}</td>
-                        <td style={styles.td}>{r.assignedVehicleType || '-'}</td>
-                        <td style={styles.td}>{assignedAt}</td>
-                        <td style={styles.td}>{(r.latitude && r.longitude) ? `${r.latitude}, ${r.longitude}` : '-'}</td>
-                        <td style={styles.td}>
-                          {(r.latitude && r.longitude) ? (
-                            <button onClick={() => setMapModal({ open: true, destination: { latitude: r.latitude, longitude: r.longitude } })} style={styles.smallButton}>Open Map</button>
-                          ) : '-'}
-                        </td>
-                      </tr>
-                    );
-                  })}
+                  {historyAssignments.map((r) => (
+                    <tr key={r.id}>
+                      <td style={styles.td}>{r.assignedVehicle}</td>
+                      <td style={styles.td}>{r.assignedVehicleType}</td>
+                      <td style={styles.td}>
+                        {r.vehicleAssignedAt?.seconds ? new Date(r.vehicleAssignedAt.seconds * 1000).toLocaleString() : "-"}
+                      </td>
+                      <td style={styles.td}>{r.latitude}, {r.longitude}</td>
+                      <td style={styles.td}>
+                        <button style={styles.smallButton} onClick={() => openMapModal(r.latitude, r.longitude)}>Open Map</button>
+                      </td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             )}
           </div>
         )}
 
-        {/* Notification */}
+        {/* -------- TOAST -------- */}
         {notification && (
           <div style={styles.toast}>
-            <div style={{ fontWeight: 'bold' }}>{notification.title}</div>
+            <b>{notification.title}</b>
             <div>{notification.message}</div>
-            <button style={styles.toastButton} onClick={() => setNotification(null)}>Close</button>
           </div>
         )}
 
-        {/* Map Modal */}
+        {/* -------- MAP MODAL -------- */}
         {mapModal.open && (
-          <div style={styles.modalOverlay} onClick={() => setMapModal({ open: false, destination: null })}>
+          <div style={styles.modalOverlay} onClick={closeMapModal}>
             <div style={styles.modalBody} onClick={(e) => e.stopPropagation()}>
               <div style={styles.modalHeader}>
-                <h3 style={{ margin: 0 }}>Map</h3>
-                <button style={styles.button} onClick={() => setMapModal({ open: false, destination: null })}>Close</button>
+                <h3>Map View</h3>
+                <button style={styles.button} onClick={closeMapModal}>Close</button>
               </div>
-              <DriverMap driverLocation={driver?.location} destination={mapModal.destination} />
+
+              <div style={{ height: 450 }}>
+                <DriverMap driverLocation={driver?.location} destination={mapModal.destination} />
+              </div>
             </div>
           </div>
         )}
@@ -300,70 +633,154 @@ export default function DriverPortal() {
   );
 }
 
+/* ====================== PAGE STYLES ====================== */
 const styles = {
-  container: { display: 'flex', minHeight: '100vh', background: '#f5f6fa', fontFamily: 'Arial, sans-serif' },
+  container: {
+    display: "flex",
+    background: "#F5F6FA",
+    minHeight: "100vh",
+  },
+
   sidebar: {
-    position: 'fixed', left: 0, top: 0, bottom: 0, width: 220,
-    background: 'linear-gradient(to bottom, #2c3e50, #2f3b4a)', color: '#fff',
-    padding: 20, boxSizing: 'border-box', display: 'flex', flexDirection: 'column'
+    width: 220,
+    background: "linear-gradient(180deg,#1B2B3A,#26343F)",
+    color: "#fff",
+    padding: 20,
+    display: "flex",
+    flexDirection: "column",
   },
-  main: { marginLeft: 240, padding: 24, width: '100%', boxSizing: 'border-box' },
-  menu: { listStyle: 'none', padding: 0, margin: '20px 0' },
-  menuItem: { padding: '10px 0', cursor: 'pointer', opacity: 0.85 },
-  menuItemActive: { fontWeight: 'bold', opacity: 1 },
-  card: {
-    background: '#fff', border: '1px solid #eaeaea', borderRadius: 10,
-    padding: 20, boxShadow: '0 4px 10px rgba(0,0,0,0.05)', marginBottom: 24
+
+  menu: {
+    listStyle: "none",
+    padding: 0,
+    marginTop: 20,
   },
-  assignmentGrid: {
-    display: 'grid',
-    gridTemplateColumns: '1fr 1fr',
-    gap: 20,
-    alignItems: 'flex-start'
+
+  menuItem: {
+    padding: "10px 6px",
+    cursor: "pointer",
+    color: "#BFD5E3",
+    borderRadius: 6,
   },
-  formGrid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-    gap: 16,
-    marginTop: 12
+
+  menuItemActive: {
+    background: "rgba(255,255,255,0.1)",
+    color: "#fff",
+    fontWeight: "bold",
   },
-  button: {
-    padding: '10px 16px', borderRadius: 8, border: 'none', background: '#1f7a8c',
-    color: '#fff', cursor: 'pointer', fontWeight: 'bold'
-  },
-  smallButton: {
-    padding: '6px 12px', borderRadius: 6, border: 'none', background: '#1f7a8c',
-    color: '#fff', cursor: 'pointer', fontSize: 13
-  },
-  th: { padding: 10, border: '1px solid #ddd', textAlign: 'left' },
-  td: { padding: 8, border: '1px solid #ddd' },
-  table: { width: '100%', borderCollapse: 'collapse', marginTop: 12 },
-  input: {
-    width: '100%', padding: '10px 12px', borderRadius: 8,
-    border: '1px solid #dcdde1', boxSizing: 'border-box'
-  },
+
   logout: {
-    marginTop: 'auto', width: '100%', padding: '10px 12px',
-    borderRadius: 8, border: 'none', background: '#e63946',
-    color: '#fff', cursor: 'pointer', fontWeight: 'bold'
+    marginTop: "auto",
+    padding: "10px 14px",
+    borderRadius: 8,
+    background: "#D9534F",
+    border: "none",
+    color: "#fff",
+    cursor: "pointer",
   },
-  modalOverlay: {
-    position: 'fixed', left: 0, top: 0, right: 0, bottom: 0,
-    background: 'rgba(0,0,0,0.5)', display: 'flex',
-    alignItems: 'center', justifyContent: 'center', zIndex: 2000
+
+  main: {
+    flex: 1,
+    padding: 30,
   },
-  modalBody: {
-    width: '90%', maxWidth: 900, background: '#fff',
-    borderRadius: 10, padding: 16, boxShadow: '0 10px 30px rgba(0,0,0,0.3)'
+
+  card: {
+    background: "#fff",
+    padding: 20,
+    borderRadius: 12,
+    marginBottom: 20,
+    boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
   },
-  modalHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
+
+  assignmentGrid: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr",
+    gap: 20,
+  },
+
+  mapBox: {
+    border: "1px solid #ddd",
+    height: 220,
+    borderRadius: 10,
+    overflow: "hidden",
+  },
+
+  formGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))",
+    gap: 15,
+  },
+
+  input: {
+    padding: 10,
+    width: "100%",
+    borderRadius: 8,
+    border: "1px solid #ccc",
+  },
+
+  table: { width: "100%", borderCollapse: "collapse" },
+  th: {
+    textAlign: "left",
+    padding: 10,
+    background: "#F1F3F5",
+    borderBottom: "2px solid #ddd",
+  },
+  td: {
+    padding: 10,
+    borderBottom: "1px solid #eee",
+  },
+
+  button: {
+    background: "#1F7A8C",
+    color: "#fff",
+    border: "none",
+    padding: "10px 15px",
+    borderRadius: 8,
+    cursor: "pointer",
+    fontWeight: "bold",
+  },
+
+  smallButton: {
+    background: "#1F7A8C",
+    color: "#fff",
+    border: "none",
+    padding: "6px 10px",
+    borderRadius: 6,
+    cursor: "pointer",
+  },
+
   toast: {
-    position: 'fixed', right: 16, bottom: 16, background: '#2d3436',
-    color: '#fff', padding: '12px 16px', borderRadius: 8,
-    boxShadow: '0 6px 20px rgba(0,0,0,0.25)'
+    position: "fixed",
+    bottom: 20,
+    right: 20,
+    padding: 16,
+    background: "#111827",
+    color: "#fff",
+    borderRadius: 10,
+    zIndex: 3000,
   },
-  toastButton: {
-    marginTop: 6, background: '#636e72', color: '#fff', border: 'none',
-    borderRadius: 6, padding: '4px 8px', cursor: 'pointer', fontSize: 12
-  }
+
+  modalOverlay: {
+    position: "fixed",
+    inset: 0,
+    background: "rgba(0,0,0,0.45)",
+    display: "flex",
+    justifyContent: "center",
+    alignItems: "center",
+    zIndex: 2000,
+  },
+
+  modalBody: {
+    width: "90%",
+    maxWidth: 700,
+    background: "#fff",
+    padding: 20,
+    borderRadius: 12,
+  },
+
+  modalHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    marginBottom: 15,
+  },
 };
