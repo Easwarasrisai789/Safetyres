@@ -19,15 +19,17 @@ const AcceptedRequests = () => {
   useEffect(() => {
     let unsubscribe = null;
     let active = true;
+
     authReady.then(() => {
       if (!active) return;
+
       const q = query(
         collection(db, "emergencyRequests"),
         where("status", "==", "Accepted")
       );
 
       unsubscribe = onSnapshot(q, (snapshot) => {
-        const reqData = snapshot.docs.map((doc) => {
+        let reqData = snapshot.docs.map((doc) => {
           const data = doc.data();
           return {
             id: doc.id,
@@ -38,6 +40,13 @@ const AcceptedRequests = () => {
               : "N/A",
           };
         });
+
+        // Sort newest first
+        reqData.sort((a, b) => {
+          if (!a.timestampObj || !b.timestampObj) return 0;
+          return b.timestampObj.seconds - a.timestampObj.seconds;
+        });
+
         setAcceptedRequests(reqData);
       });
     });
@@ -48,7 +57,7 @@ const AcceptedRequests = () => {
     };
   }, []);
 
-  // Filtering logic
+  // FILTERING
   const filteredRequests = acceptedRequests
     .filter((req) => {
       if (!startDate && !endDate) return true;
@@ -60,94 +69,137 @@ const AcceptedRequests = () => {
 
       if (start && reqDate < start) return false;
       if (end && reqDate > end) return false;
+
       return true;
     })
     .filter((req) =>
       vehicleFilter === "All" ? true : req.vehicle === vehicleFilter
     );
 
+  // Vehicle dropdown options auto-build
   const vehicleOptions = [
     "All",
     ...new Set(acceptedRequests.map((req) => req.vehicle || "Unknown")),
   ];
 
-  // Assign handler
-  const handleAssign = async (id) => {
+  // FIXED ASSIGN FUNCTION (IMPORTANT)
+  const handleAssign = async (id, vehicleType) => {
     const confirmAssign = window.confirm(
-      "Are you sure you want to assign this vehicle?"
+      "Do you want to mark this vehicle as assigned?"
     );
     if (!confirmAssign) return;
 
     const requestRef = doc(db, "emergencyRequests", id);
+
     await updateDoc(requestRef, {
       assignedVehicle: "Assigned",
+      assignedVehicleType: vehicleType, // 🔥 FIX: Send correct type to AssignedVehicles page
     });
 
-    alert("Vehicle assigned successfully!");
+    alert("Vehicle marked as assigned!");
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100vh", marginLeft: 220 }}>
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        marginLeft: 220,
+        padding: "20px",
+        background: "#f4f6f9",
+        minHeight: "100vh",
+      }}
+    >
       <AdminNavbar />
-      <div style={{ padding: "20px" }}>
-        <h2>Accepted Requests</h2>
 
-        {/* Date Filter */}
-        <div style={{ marginBottom: "15px" }}>
-          <label style={{ fontWeight: "bold", marginRight: "5px" }}>
-            Start Date:
-          </label>
+      <h1 style={{ marginBottom: "10px", fontSize: "26px", fontWeight: "700" }}>
+        🚑 Accepted Emergency Requests
+      </h1>
+
+      <p style={{ color: "#666", marginBottom: "20px" }}>
+        Track all accepted requests with automatic sorting & filtering.
+      </p>
+
+      {/* FILTERS */}
+      <div
+        style={{
+          display: "flex",
+          gap: "20px",
+          marginBottom: "20px",
+          flexWrap: "wrap",
+        }}
+      >
+        {/* DATE FILTER */}
+        <div
+          style={{
+            background: "white",
+            padding: "15px",
+            borderRadius: "10px",
+            boxShadow: "0 0 10px rgba(0,0,0,0.08)",
+            flex: "1",
+            minWidth: "280px",
+          }}
+        >
+          <h3 style={{ marginBottom: "10px" }}>📅 Filter by Date</h3>
+
+          <label>From:</label>
           <input
             type="date"
             value={startDate}
             onChange={(e) => setStartDate(e.target.value)}
-            style={{ marginRight: "15px" }}
+            style={inputStyle}
           />
-          <label style={{ fontWeight: "bold", marginRight: "5px" }}>
-            End Date:
-          </label>
+
+          <label style={{ marginTop: "10px" }}>To:</label>
           <input
             type="date"
             value={endDate}
             onChange={(e) => setEndDate(e.target.value)}
+            style={inputStyle}
           />
         </div>
 
-        {/* Vehicle Filter */}
-        <div style={{ marginBottom: "15px" }}>
-          <label style={{ marginRight: "10px", fontWeight: "bold" }}>
-            Filter by Vehicle:
-          </label>
+        {/* VEHICLE FILTER */}
+        <div
+          style={{
+            background: "white",
+            padding: "15px",
+            borderRadius: "10px",
+            boxShadow: "0 0 10px rgba(0,0,0,0.08)",
+            flex: "1",
+            minWidth: "280px",
+          }}
+        >
+          <h3 style={{ marginBottom: "10px" }}>🚓 Filter by Vehicle</h3>
+
           <select
             value={vehicleFilter}
             onChange={(e) => setVehicleFilter(e.target.value)}
-            style={{
-              padding: "5px 10px",
-              borderRadius: "5px",
-              border: "1px solid #ccc",
-            }}
+            style={{ ...inputStyle, padding: "10px", fontSize: "16px" }}
           >
-            {vehicleOptions.map((v, index) => (
-              <option key={index} value={v}>
-                {v}
-              </option>
+            {vehicleOptions.map((v, i) => (
+              <option key={i}>{v}</option>
             ))}
           </select>
         </div>
+      </div>
 
-        {filteredRequests.length === 0 ? (
-          <p>No accepted requests found.</p>
-        ) : (
-          <table
-            style={{
-              width: "100%",
-              borderCollapse: "collapse",
-              border: "1px solid #ddd",
-              backgroundColor: "#f9f9f9",
-            }}
-          >
+      {/* REQUEST TABLE */}
+      {filteredRequests.length === 0 ? (
+        <p style={{ fontSize: "18px", color: "gray" }}>No accepted requests.</p>
+      ) : (
+        <div
+          style={{
+            background: "white",
+            borderRadius: "10px",
+            padding: "20px",
+            boxShadow: "0 0 10px rgba(0,0,0,0.08)",
+            overflowX: "auto",
+          }}
+        >
+          <table style={tableStyle}>
             <thead>
-              <tr style={{ backgroundColor: "#007BFF", color: "white" }}>
+              <tr style={{ background: "#007BFF", color: "white" }}>
                 <th style={thStyle}>Name</th>
                 <th style={thStyle}>Phone</th>
                 <th style={thStyle}>Vehicle</th>
@@ -155,43 +207,40 @@ const AcceptedRequests = () => {
                 <th style={thStyle}>Longitude</th>
                 <th style={thStyle}>Date & Time</th>
                 <th style={thStyle}>Map</th>
-                <th style={thStyle}>Status</th>
+                <th style={thStyle}>Assigned</th>
               </tr>
             </thead>
+
             <tbody>
               {filteredRequests.map((req) => (
-                <tr key={req.id}>
+                <tr key={req.id} style={rowStyle}>
                   <td style={tdStyle}>{req.name}</td>
                   <td style={tdStyle}>{req.phone}</td>
-                  <td style={tdStyle}>{req.vehicle || "N/A"}</td>
+                  <td style={tdStyle}>{req.vehicle}</td>
                   <td style={tdStyle}>{req.latitude}</td>
                   <td style={tdStyle}>{req.longitude}</td>
                   <td style={tdStyle}>{req.dateTime}</td>
+
                   <td style={tdStyle}>
                     <a
                       href={`https://www.google.com/maps?q=${req.latitude},${req.longitude}`}
                       target="_blank"
-                      rel="noopener noreferrer"
-                      style={{ color: "#007BFF", textDecoration: "none" }}
+                      rel="noreferrer"
+                      style={{ color: "#007BFF", fontWeight: "bold" }}
                     >
-                      View Map
+                      🌍 Map
                     </a>
                   </td>
+
                   <td style={tdStyle}>
                     {req.assignedVehicle === "Assigned" ? (
-                      <span style={{ color: "green", fontSize: "20px" }}>✅</span>
+                      <span style={{ color: "green", fontSize: "22px" }}>✔</span>
                     ) : (
                       <button
-                        onClick={() => handleAssign(req.id)}
-                        style={{
-                          background: "none",
-                          border: "none",
-                          cursor: "pointer",
-                          fontSize: "20px",
-                          color: "red",
-                        }}
+                        onClick={() => handleAssign(req.id, req.vehicle)}
+                        style={assignBtnStyle}
                       >
-                        ❌
+                        Assign
                       </button>
                     )}
                   </td>
@@ -199,23 +248,49 @@ const AcceptedRequests = () => {
               ))}
             </tbody>
           </table>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 };
 
 // Styles
-const thStyle = {
-  padding: "10px",
-  textAlign: "left",
+const inputStyle = {
+  width: "100%",
+  padding: "8px",
+  borderRadius: "6px",
   border: "1px solid #ddd",
+  marginTop: "5px",
+};
+
+const tableStyle = {
+  width: "100%",
+  borderCollapse: "collapse",
+};
+
+const thStyle = {
+  padding: "12px",
+  textAlign: "left",
+  borderBottom: "2px solid #ddd",
 };
 
 const tdStyle = {
-  padding: "8px",
-  border: "1px solid #ddd",
-  backgroundColor: "white",
+  padding: "12px",
+  borderBottom: "1px solid #eee",
+};
+
+const rowStyle = {
+  transition: "0.2s",
+};
+
+const assignBtnStyle = {
+  background: "#dc3545",
+  color: "white",
+  padding: "6px 14px",
+  borderRadius: "6px",
+  cursor: "pointer",
+  border: "none",
+  fontWeight: "600",
 };
 
 export default AcceptedRequests;
