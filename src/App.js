@@ -13,6 +13,8 @@ import Drivers from './pages/Drivers';
 import DriverPortal from './pages/DriverPortal';
 import DriverLogin from './pages/DriverLogin';
 import Reports from './pages/Reports';
+import DriverLive from './pages/DriverLive';
+import DriverUserLive from './pages/DriverUserLive';   // ✅ FIXED IMPORT
 
 function App() {
   return (
@@ -22,14 +24,18 @@ function App() {
         <Route path="/admin-login" element={<AdminLogin />} />
         <Route path="/admin" element={<Admin />} />
         <Route path="/contact" element={<Contact />} />
-        <Route path="/requests" element={<RequestsPage/>}/>
+        <Route path="/requests" element={<RequestsPage />} />
         <Route path="/accepted-requests" element={<AcceptedRequests />} />
-        <Route path="/AssignedVehicles" element={<AssignedVehicles/>}/>
-        <Route path="/drivers" element={<Drivers/>}/>
-        <Route path="/driver-login" element={<DriverLogin/>}/>
-        <Route path="/driver" element={<DriverPortal/>}/>
-        <Route path="/reports" element={<Reports/>}/>
-        <Route path="/AnimatedLogo" element={<AnimatedLogo/>}/>
+        <Route path="/AssignedVehicles" element={<AssignedVehicles />} />
+        <Route path="/drivers" element={<Drivers />} />
+        <Route path="/driver-login" element={<DriverLogin />} />
+        <Route path="/driver" element={<DriverPortal />} />
+        <Route path="/reports" element={<Reports />} />
+        <Route path="/AnimatedLogo" element={<AnimatedLogo />} />
+
+        {/* LIVE TRACKING PAGES */}
+        <Route path="/driver-live" element={<DriverLive />} />
+        <Route path="/driver-user-live" element={<DriverUserLive />} />  {/* ✅ NEW PAGE */}
 
       </Routes>
     </Router>
