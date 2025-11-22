@@ -9,6 +9,7 @@ const RequestsPage = () => {
   const [selected, setSelected] = useState(null);
   const navigate = useNavigate();
 
+  // Copy Location
   const handleCopy = (req) => {
     if (req.latitude && req.longitude) {
       const mapsLink = `https://www.google.com/maps?q=${req.latitude},${req.longitude}`;
@@ -17,33 +18,37 @@ const RequestsPage = () => {
         alert("Location & phone copied to clipboard!");
       });
     } else {
-      alert("No location data to share.");
+      alert("No location data available.");
     }
   };
 
+  // Share Location
   const handleShare = (req) => {
     if (req.latitude && req.longitude) {
       const osmLink = `https://www.openstreetmap.org/?mlat=${req.latitude}&mlon=${req.longitude}#map=18/${req.latitude}/${req.longitude}`;
       window.open(osmLink, "_blank");
     } else {
-      alert("No location data to share.");
+      alert("Location not available.");
     }
   };
 
+  // Auto Status Update (with auto vehicle assignment)
   const handleStatusUpdate = async (reqId, newStatus) => {
     try {
-      const reqDocRef = doc(db, "emergencyRequests", reqId);
-      // If accepting, auto-assign a default vehicle based on situation/vehicle usage
+      const reqDoc = doc(db, "emergencyRequests", reqId);
+
       let extraUpdate = {};
       if (newStatus === "Accepted") {
         const current = requests.find((r) => r.id === reqId);
         const typeSrc = (current?.situation || current?.vehicle || "").toLowerCase();
+
         let vehicleType = "ambulance";
         if (typeSrc.includes("fire")) vehicleType = "fireengine";
         else if (typeSrc.includes("police") || typeSrc.includes("crime")) vehicleType = "policevan";
 
         const poolSize = 10;
-        const slot = ((Date.now() / 60000) | 0) % poolSize; // rotate across 10 slots per minute
+        const slot = ((Date.now() / 60000) | 0) % poolSize;
+
         const assignedVehicle =
           vehicleType === "ambulance"
             ? `Ambulance-${slot + 1}`
@@ -57,36 +62,29 @@ const RequestsPage = () => {
           vehicleAssignedAt: serverTimestamp(),
         };
       }
-      await updateDoc(reqDocRef, { status: newStatus, ...extraUpdate });
 
-      // Update local state
+      await updateDoc(reqDoc, { status: newStatus, ...extraUpdate });
+
       setRequests((prev) =>
-        prev.map((r) =>
-          r.id === reqId ? { ...r, status: newStatus } : r
-        )
+        prev.map((r) => (r.id === reqId ? { ...r, status: newStatus } : r))
       );
-
-      if (selected?.id === reqId) {
-        setSelected((prev) => ({ ...prev, status: newStatus }));
-      }
-
-      // Redirect to accepted list if accepted
-      if (newStatus === "Accepted") navigate("/AssignedVehicles");
     } catch (error) {
-      console.error("Error updating status:", error);
-      alert("Failed to update status. Please try again.");
+      console.error("Failed:", error);
     }
   };
 
+  // AUTO ACCEPT LOGIC (MAIN PART)
   useEffect(() => {
     let unsubscribe = null;
     let active = true;
+
     authReady.then(() => {
       if (!active) return;
+
       unsubscribe = onSnapshot(
         collection(db, "emergencyRequests"),
-        (snapshot) => {
-          const reqData = snapshot.docs.map((doc) => {
+        async (snapshot) => {
+          const allReq = snapshot.docs.map((doc) => {
             const data = doc.data();
             return {
               id: doc.id,
@@ -99,17 +97,20 @@ const RequestsPage = () => {
               timestamp: data.timestamp ? data.timestamp.toDate() : null,
             };
           });
-          
-          // Filter requests to only show those from the last 1 hour
+
+          // Auto accept any new pending request
+          for (const req of allReq) {
+            if (req.status === "Pending") {
+              await handleStatusUpdate(req.id, "Accepted");
+            }
+          }
+
+          // Show only last 1 hour
           const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
-          const freshRequests = reqData.filter(req => {
-            if (!req.timestamp) return false;
-            return req.timestamp >= oneHourAgo;
-          });
-          
-          setRequests(freshRequests);
-        },
-        (error) => console.error("Error fetching requests:", error)
+          const fresh = allReq.filter((r) => r.timestamp && r.timestamp >= oneHourAgo);
+
+          setRequests(fresh);
+        }
       );
     });
 
@@ -119,148 +120,113 @@ const RequestsPage = () => {
     };
   }, []);
 
-  useEffect(() => {
-    if (!selected && requests.length > 0) {
-      setSelected(requests[0]);
-    }
-  }, [requests, selected]);
-
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100vh", marginLeft: 220 }}>
+    <div style={{ display: "flex", flexDirection: "column", marginLeft: 220, background: "#f4f6f9", minHeight: "100vh" }}>
       <AdminNavbar />
-      <div style={{ display: "flex", flex: 1, flexWrap: "wrap" }}>
-        {/* Table Section */}
-        <div style={{ flex: 1, minWidth: "300px", padding: "20px", overflowX: "auto" }}>
-          <h2>Incoming Requests (Fresh - Last 1 Hour)</h2>
-          <p style={{ color: "#666", fontSize: "14px", marginBottom: "15px" }}>
-            Showing only requests from the last hour for faster response times
-          </p>
-          {requests.length === 0 ? (
-            <p>No fresh incoming requests in the last hour.</p>
-          ) : (
-            <table style={{ width: "100%", borderCollapse: "collapse", border: "1px solid #ddd" }}>
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Phone</th>
-                  <th>Situation</th>
-                  <th>Time Received</th>
-                  <th>Latitude</th>
-                  <th>Longitude</th>
-                  <th>Share Location</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {requests.map((req) => (
-                  <tr
-                    key={req.id}
-                    onClick={() => setSelected(req)}
-                    style={{
-                      cursor: "pointer",
-                      backgroundColor: selected?.id === req.id ? "#f0f0f0" : "transparent",
-                    }}
-                  >
-                    <td>{req.name}</td>
-                    <td>{req.phone}</td>
-                    <td>{req.situation}</td>
-                    <td>{req.timestamp ? req.timestamp.toLocaleString() : "-"}</td>
-                    <td>{req.latitude ? req.latitude.toFixed(4) : "-"}</td>
-                    <td>{req.longitude ? req.longitude.toFixed(4) : "-"}</td>
-                    <td>
-                      <button
-                        onClick={(e) => { e.stopPropagation(); handleCopy(req); }}
-                        style={{
-                          padding: "6px 10px",
-                          background: "#4CAF50",
-                          color: "#fff",
-                          border: "none",
-                          borderRadius: "4px",
-                          cursor: "pointer",
-                          marginRight: "5px",
-                        }}
-                      >
-                        Copy
-                      </button>
-                      <button
-                        onClick={(e) => { e.stopPropagation(); handleShare(req); }}
-                        style={{
-                          padding: "6px 10px",
-                          background: "#2196F3",
-                          color: "#fff",
-                          border: "none",
-                          borderRadius: "4px",
-                          cursor: "pointer",
-                        }}
-                      >
-                        Share
-                      </button>
-                    </td>
-                    <td>
-                      <button
-                        disabled={req.status === "Accepted"}
-                        onClick={(e) => { e.stopPropagation(); handleStatusUpdate(req.id, "Accepted"); }}
-                        style={{
-                          padding: "6px 10px",
-                          marginRight: "5px",
-                          background: req.status === "Accepted" ? "#8BC34A" : "#4CAF50",
-                          color: "#fff",
-                          border: "none",
-                          borderRadius: "4px",
-                          cursor: req.status === "Accepted" ? "default" : "pointer",
-                        }}
-                      >
-                        Accept
-                      </button>
-                      <button
-                        disabled={req.status === "Rejected"}
-                        onClick={(e) => { e.stopPropagation(); handleStatusUpdate(req.id, "Rejected"); }}
-                        style={{
-                          padding: "6px 10px",
-                          background: req.status === "Rejected" ? "#E57373" : "#F44336",
-                          color: "#fff",
-                          border: "none",
-                          borderRadius: "4px",
-                          cursor: req.status === "Rejected" ? "default" : "pointer",
-                        }}
-                      >
-                        Reject
-                      </button>
-                      <div style={{
-                        marginTop: "5px",
-                        fontWeight: "bold",
-                        color:
-                          req.status === "Accepted" ? "#4CAF50" :
-                          req.status === "Rejected" ? "#F44336" : "black",
-                      }}>
-                        {req.status}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
 
-        {/* Map Section */}
-        <div style={{ flex: 1, minWidth: "300px", height: "100%" }}>
-          {selected && selected.latitude && selected.longitude ? (
-            <iframe
-              title="OpenStreetMap"
-              width="100%"
-              height="100%"
-              style={{ border: 0 }}
-              loading="lazy"
-              src={`https://www.openstreetmap.org/export/embed.html?bbox=${selected.longitude - 0.01},${selected.latitude - 0.01},${selected.longitude + 0.01},${selected.latitude + 0.01}&layer=mapnik&marker=${selected.latitude},${selected.longitude}`}
-            ></iframe>
-          ) : (
-            <p style={{ padding: "20px" }}>No location data available</p>
-          )}
-        </div>
+      <div style={{ padding: "20px" }}>
+        <h1 style={{ fontSize: "26px", fontWeight: "700", marginBottom: "10px" }}>
+          🚨 Emergency Requests (Auto-Accept Enabled)
+        </h1>
+        <p style={{ color: "#666", marginBottom: "20px" }}>
+          All incoming requests are automatically accepted & assigned.
+        </p>
+
+        {/* Requests */}
+        {requests.length === 0 ? (
+          <p style={{ fontSize: "18px", color: "gray" }}>No recent requests.</p>
+        ) : (
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fill, minmax(350px, 1fr))",
+              gap: "20px",
+            }}
+          >
+            {requests.map((req) => (
+              <div
+                key={req.id}
+                onClick={() => setSelected(req)}
+                style={{
+                  borderRadius: "12px",
+                  background: "#fff",
+                  padding: "20px",
+                  boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
+                  cursor: "pointer",
+                  transition: "0.2s",
+                  border: selected?.id === req.id ? "2px solid #007bff" : "2px solid transparent",
+                }}
+              >
+                <h3>{req.name}</h3>
+                <p><b>Phone:</b> {req.phone}</p>
+                <p><b>Situation:</b> {req.situation}</p>
+                <p><b>Time:</b> {req.timestamp?.toLocaleString()}</p>
+
+                {/* Status Badge */}
+                <div
+                  style={{
+                    marginTop: "10px",
+                    padding: "5px 12px",
+                    borderRadius: "20px",
+                    color: "white",
+                    background: "#28a745",
+                    display: "inline-block",
+                    fontWeight: "600",
+                  }}
+                >
+                  Accepted
+                </div>
+
+                {/* Buttons */}
+                <div style={{ marginTop: "15px", display: "flex", gap: "10px" }}>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleCopy(req); }}
+                    style={buttonStyle("#007bff")}
+                  >
+                    Copy
+                  </button>
+
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleShare(req); }}
+                    style={buttonStyle("#17a2b8")}
+                  >
+                    Share
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Map Panel */}
+      <div style={{ height: "400px", marginTop: "30px", padding: "20px" }}>
+        {selected?.latitude && selected?.longitude ? (
+          <iframe
+            title="OpenStreetMap"
+            width="100%"
+            height="100%"
+            style={{ border: 0, borderRadius: "10px" }}
+            src={`https://www.openstreetmap.org/export/embed.html?bbox=${selected.longitude - 0.01},${selected.latitude - 0.01},${selected.longitude + 0.01},${selected.latitude + 0.01}&layer=mapnik&marker=${selected.latitude},${selected.longitude}`}
+          ></iframe>
+        ) : (
+          <p style={{ color: "gray" }}>Select a request to view location.</p>
+        )}
       </div>
     </div>
   );
 };
+
+// Button Styling
+const buttonStyle = (color) => ({
+  padding: "8px 14px",
+  background: color,
+  color: "white",
+  border: "none",
+  borderRadius: "6px",
+  cursor: "pointer",
+  fontWeight: "600",
+  transition: "0.2s",
+});
 
 export default RequestsPage;
