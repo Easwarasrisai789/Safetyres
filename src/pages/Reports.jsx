@@ -24,54 +24,124 @@ export default function Reports() {
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh', marginLeft: 220 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh', marginLeft: 220, background: '#f4f7fb' }}>
       <AdminNavbar />
-      <div style={{ padding: 20 }}>
-        <h2>Reports</h2>
-        {reports.length === 0 ? (
-          <p>No reports submitted.</p>
-        ) : (
-          <table style={{ width: '100%', borderCollapse: 'collapse', border: '1px solid #ddd', background: '#fff' }}>
-            <thead>
-              <tr style={{ background: '#f1f3f5' }}>
-                <th style={th}>Created</th>
-                <th style={th}>Email</th>
-                <th style={th}>Messages</th>
-                <th style={th}>Status</th>
-                <th style={th}>Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {reports.map((r) => (
-                <tr key={r.id}>
-                  <td style={td}>{r.createdAt?.seconds ? new Date(r.createdAt.seconds * 1000).toLocaleString() : '-'}</td>
-                  <td style={td}>{r.email || '-'}</td>
-                  <td style={td}>
-                    <ul style={{ margin: 0, paddingLeft: 16 }}>
-                      {(r.messages || []).map((m, i) => (
-                        <li key={i}><strong>{m.role}:</strong> {m.text}</li>
-                      ))}
-                    </ul>
-                  </td>
-                  <td style={td}>{r.status || 'open'}</td>
-                  <td style={td}>
-                    {r.status !== 'resolved' && (
-                      <button onClick={() => markResolved(r.id)} style={{ padding: '6px 10px', border: 'none', borderRadius: 6, background: '#1f7a8c', color: '#fff' }}>Mark Resolved</button>
-                    )}
-                  </td>
+
+      <div style={{ padding: "30px" }}>
+        <h1 style={{ marginBottom: 10, fontSize: 26, fontWeight: 700 }}>📢 User Reports</h1>
+        <p style={{ color: "#666", marginBottom: 20 }}>
+          View all user-submitted reports, conversations and mark resolved.
+        </p>
+
+        <div style={{
+          background: "white",
+          padding: "20px",
+          borderRadius: "12px",
+          boxShadow: "0 3px 15px rgba(0,0,0,0.08)"
+        }}>
+          
+          {reports.length === 0 ? (
+            <p style={{ fontSize: "18px", color: "gray", textAlign: "center", padding: "20px" }}>
+              No reports submitted.
+            </p>
+          ) : (
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ background: "#1f7a8c", color: "white" }}>
+                  <th style={th}>Created</th>
+                  <th style={th}>Email</th>
+                  <th style={th}>Messages</th>
+                  <th style={th}>Status</th>
+                  <th style={th}>Action</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
+              </thead>
+
+              <tbody>
+                {reports.map((r) => (
+                  <tr key={r.id} style={row}>
+                    <td style={td}>{r.createdAt?.seconds ? new Date(r.createdAt.seconds * 1000).toLocaleString() : '-'}</td>
+                    <td style={td}>{r.email || '-'}</td>
+                    <td style={{ ...td, maxWidth: "400px" }}>
+                      <div style={{ 
+                        background: "#f9fafb", 
+                        padding: "10px 12px", 
+                        borderRadius: "8px", 
+                        border: "1px solid #eee",
+                        maxHeight: "200px",
+                        overflowY: "auto"
+                      }}>
+                        {(r.messages || []).map((m, i) => (
+                          <p key={i} style={{ margin: "6px 0", fontSize: "14px" }}>
+                            <strong style={{ color: "#1f7a8c" }}>{m.role}:</strong> {m.text}
+                          </p>
+                        ))}
+                      </div>
+                    </td>
+
+                    <td style={td}>
+                      <span style={{
+                        padding: "5px 12px",
+                        borderRadius: "20px",
+                        fontSize: "14px",
+                        fontWeight: 600,
+                        color: r.status === 'resolved' ? "#155724" : "#856404",
+                        background: r.status === 'resolved' ? "#d4edda" : "#fff3cd",
+                        border: "1px solid rgba(0,0,0,0.1)"
+                      }}>
+                        {r.status || "open"}
+                      </span>
+                    </td>
+
+                    <td style={td}>
+                      {r.status !== 'resolved' ? (
+                        <button 
+                          onClick={() => markResolved(r.id)} 
+                          style={resolveBtn}
+                        >
+                          Mark Resolved
+                        </button>
+                      ) : (
+                        <span style={{ color: "green", fontWeight: 600 }}>✔ Resolved</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+
+            </table>
+          )}
+        </div>
       </div>
     </div>
   );
 }
 
-const th = { padding: 10, border: '1px solid #ddd', textAlign: 'left' };
-const td = { padding: 8, border: '1px solid #ddd', verticalAlign: 'top' };
+const th = {
+  padding: "12px",
+  textAlign: "left",
+  fontSize: "14px"
+};
 
+const td = {
+  padding: "14px 10px",
+  borderBottom: "1px solid #eee",
+  verticalAlign: "top",
+  fontSize: "14px"
+};
 
+const row = {
+  background: "white",
+  transition: "0.2s ease"
+};
 
-
+const resolveBtn = {
+  background: "#1f7a8c",
+  border: "none",
+  color: "white",
+  padding: "8px 14px",
+  borderRadius: "8px",
+  cursor: "pointer",
+  fontWeight: "600",
+  fontSize: "14px",
+  transition: "0.2s ease",
+};
